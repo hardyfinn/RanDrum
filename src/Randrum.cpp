@@ -43,6 +43,13 @@ struct LoopQuantity : ParamQuantity {
 	}
 };
 
+struct VarietyQuantity : ParamQuantity {
+	std::string getDisplayValueString() override {
+		int n = (int) std::round(getValue());
+		return n >= MAX_LOOP ? "all different" : string::f("%d sound%s", n, n == 1 ? "" : "s");
+	}
+};
+
 struct PanQuantity : ParamQuantity {
 	std::string getDisplayValueString() override {
 		float p = getValue();
@@ -62,6 +69,7 @@ struct Randrum : Module {
 		PAN_PARAM, PAN_RND_PARAM,
 		MUTATE_PARAM, LOOP_PARAM,
 		MODE_PARAM, CHOKE_PARAM, REROLL_PARAM,
+		VARIETY_PARAM,
 		PARAMS_LEN
 	};
 	enum InputId {
@@ -118,6 +126,8 @@ struct Randrum : Module {
 		configSwitch(MODE_PARAM, 0.f, 2.f, 0.f, "Pick", {"Random", "Walk (one step at a time)", "Cycle (in order)"});
 		configSwitch(CHOKE_PARAM, 0.f, 1.f, 0.f, "Voices", {"Overlap (tails ring on)", "Choke (each hit cuts the last)"});
 		configButton(REROLL_PARAM, "Re-roll the whole loop");
+		configParam<VarietyQuantity>(VARIETY_PARAM, 1.f, (float) MAX_LOOP, (float) MAX_LOOP, "Variety (how many different samples, in pick mode rnd)");
+		getParamQuantity(VARIETY_PARAM)->snapEnabled = true;
 
 		configInput(SAMPLE_INPUT, "Sample CV (0-10 V sweeps the folder)");
 		configInput(VOCT_INPUT, "Pitch V/OCT");
@@ -175,6 +185,7 @@ struct Randrum : Module {
 		c.loop = clamp((int) std::round(params[LOOP_PARAM].getValue()), 0, MAX_LOOP);
 		c.mode = (PickMode) clamp((int) std::round(params[MODE_PARAM].getValue()), 0, 2);
 		c.choke = params[CHOKE_PARAM].getValue() > 0.5f;
+		c.variety = clamp((int) std::round(params[VARIETY_PARAM].getValue()), 1, MAX_LOOP);
 		c.quantise = quantise;
 		return c;
 	}
@@ -383,10 +394,12 @@ struct Randrum : Module {
 		json_t* sf = json_object_get(root, "subfolders");
 		subfolders = sf ? json_boolean_value(sf) : true;
 		json_t* ring = json_object_get(root, "dice");
-		if (ring && json_array_size(ring) == (size_t) (MAX_LOOP * NUM_DICE)) {
+		// patches from 2.0/2.1 have 8 dice per step (no D_GROUP): keep a fresh roll for it
+		size_t perStep = ring ? json_array_size(ring) / MAX_LOOP : 0;
+		if (ring && json_array_size(ring) % MAX_LOOP == 0 && perStep >= 8 && perStep <= (size_t) NUM_DICE) {
 			for (int i = 0; i < MAX_LOOP; i++)
-				for (int k = 0; k < NUM_DICE; k++)
-					engine.ring[i].d[k] = clamp((float) json_number_value(json_array_get(ring, i * NUM_DICE + k)), 0.f, 0.999999f);
+				for (int k = 0; k < (int) perStep; k++)
+					engine.ring[i].d[k] = clamp((float) json_number_value(json_array_get(ring, i * perStep + k)), 0.f, 0.999999f);
 		}
 		engine.reset();
 		json_t* f = json_object_get(root, "folder");
@@ -569,9 +582,15 @@ struct RandrumDisplay : Widget {
 			text(vg, rcx, rcy - fs * 0.3f, "FREE", C_INK, C, fs * 1.2f);
 			text(vg, rcx, rcy + fs, "new dice", C_SOFT, C, fss);
 			text(vg, rcx, rcy + fs * 1.9f, "every hit", C_SOFT, C, fss);
+			int K = DrumEngine::varietyCount(c);
+			if (K > 0) text(vg, rcx, rcy + fs * 2.9f, string::f("%d sound%s", K, K == 1 ? "" : "s"), C_WIN, C, fss * 0.9f);
 		}
 		else {
 			int Lp = c.loop;
+			int K = DrumEngine::varietyCount(c);
+			int grp[MAX_LOOP];
+			if (K > 0) module->engine.groups(Lp, K, grp);
+			if (K > 0) rr *= 0.82f;  // room for the sound letters
 			for (int i = 0; i < Lp; i++) {
 				float a = -M_PI / 2 + 2 * M_PI * i / Lp;
 				float x = rcx + rr * std::cos(a), y = rcy + rr * std::sin(a);
@@ -580,6 +599,11 @@ struct RandrumDisplay : Widget {
 				float lev = std::pow(10.f, -sl.d[D_LEVEL] * c.levelRnd * 24.f / 20.f);
 				float r = mm2px(0.55f + 0.75f * lev);
 				bool cur = i == module->engine.pos;
+				if (K > 0) {
+					float lr = rr + mm2px(2.2f);
+					std::string letter(1, (char) ('A' + grp[i]));
+					text(vg, rcx + lr * std::cos(a), rcy + lr * std::sin(a), letter, cur ? C_HOT : C_WIN, C, fss * 0.8f);
+				}
 				nvgBeginPath(vg);
 				nvgCircle(vg, x, y, r);
 				if (plays) {
@@ -594,6 +618,7 @@ struct RandrumDisplay : Widget {
 			}
 			text(vg, rcx, rcy - fs * 0.15f, string::f("%d", Lp), C_INK, C, fs * 1.3f);
 			text(vg, rcx, rcy + fs * 0.95f, string::f("mut %.0f%%", c.mutate * 100), C_SOFT, C, fss * 0.9f);
+			if (K > 0) text(vg, rcx, rcy + fs * 1.85f, string::f("%d sound%s", K, K == 1 ? "" : "s"), C_WIN, C, fss * 0.9f);
 		}
 		text(vg, rcx, pad + fs, "LOOP", C_SOFT, NVG_ALIGN_CENTER | NVG_ALIGN_BASELINE, fss);
 		if (engineStuck)
@@ -648,7 +673,8 @@ struct RandrumWidget : ModuleWidget {
 
 		addParam(createParamCentered<CKSSThreeHorizontal>(mm2px(Vec(18.0f, CTRL_Y)), module, Randrum::MODE_PARAM));
 		addParam(createParamCentered<CKSS>(mm2px(Vec(45.7f, CTRL_Y)), module, Randrum::CHOKE_PARAM));
-		addParam(createLightParamCentered<VCVLightBezel<WhiteLight>>(mm2px(Vec(70.0f, CTRL_Y)), module, Randrum::REROLL_PARAM, Randrum::REROLL_LIGHT));
+		addParam(createLightParamCentered<VCVLightBezel<WhiteLight>>(mm2px(Vec(63.5f, CTRL_Y)), module, Randrum::REROLL_PARAM, Randrum::REROLL_LIGHT));
+		addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(108.0f, CTRL_Y)), module, Randrum::VARIETY_PARAM));
 
 		const int ins[3] = {Randrum::TRIG_INPUT, Randrum::RESET_INPUT, Randrum::REROLL_INPUT};
 		for (int i = 0; i < 3; i++)

@@ -55,7 +55,8 @@ struct Bank {
 	int size() const { return (int) samples.size(); }
 };
 
-enum Die { D_CHANCE, D_SAMPLE, D_PITCH, D_DECAY, D_START, D_LEVEL, D_PAN, D_REV, NUM_DICE };
+// D_GROUP decides which of the VARIETY sounds a step uses.
+enum Die { D_CHANCE, D_SAMPLE, D_PITCH, D_DECAY, D_START, D_LEVEL, D_PAN, D_REV, D_GROUP, NUM_DICE };
 
 struct Slot {
 	float d[NUM_DICE] = {};
@@ -82,6 +83,7 @@ struct Controls {
 	float mutate = 0.f;      // 0..1
 	int loop = 0;            // 0 = free (new dice every hit), 1..16
 	PickMode mode = PICK_RANDOM;
+	int variety = MAX_LOOP;  // most different samples (RANDOM pick); >= loop length = no limit
 	bool choke = false;
 	bool quantise = false;
 };
@@ -98,6 +100,7 @@ struct HitInfo {
 	float pan = 0.f;
 	bool reverse = false;
 	int windowLo = 0, windowSize = 1;
+	int group = -1;          // which of the VARIETY sounds (-1 = not limited)
 	uint32_t count = 0;      // increments on every trigger
 };
 
@@ -147,6 +150,7 @@ struct DrumEngine {
 	uint32_t ageCounter = 0;
 	Rng rng;
 	HitInfo last;
+	int lastGroup = -1;     // free mode: the sound used by the last hit
 	float lastEnv = 0.f;    // envelope of the newest voice, for ENV out
 
 	DrumEngine() { rerollAll(); }
@@ -219,6 +223,70 @@ struct DrumEngine {
 		}
 	}
 
+	// ---- VARIETY ---------------------------------------------------------------
+	// How many different sounds are in play, or 0 when VARIETY doesn't limit.
+	static int varietyCount(const Controls& c) {
+		if (c.mode != PICK_RANDOM) return 0;
+		int L = c.loop > 0 ? std::min(c.loop, MAX_LOOP) : MAX_LOOP;
+		int K = std::max(1, c.variety);
+		return K < L ? K : 0;
+	}
+
+	// Gives each of the L loop steps one of K sounds. Every sound is used, the
+	// counts are as even as possible, and the same sound is never on two
+	// neighbouring steps (also across the end of the loop) when that is
+	// possible. The order comes from each step's D_GROUP die, so it is part
+	// of the pattern: it repeats, and MUTATE changes it slowly.
+	void groups(int L, int K, int* g) const {
+		K = std::max(1, std::min(K, L));
+		// sound labels in the order of their dice, so which sound gets the
+		// most steps is part of the pattern too
+		int label[MAX_LOOP];
+		for (int k = 0; k < K; k++) label[k] = k;
+		std::sort(label, label + K, [&](int a, int b) { return ring[a].d[D_GROUP] < ring[b].d[D_GROUP]; });
+		// each sound's steps, fullest first, laid on the even steps and then
+		// the odd ones: that keeps repeats apart
+		int list[MAX_LOOP], m = 0;
+		for (int k = 0; k < K; k++) {
+			int count = L / K + (k < L % K ? 1 : 0);
+			for (int i = 0; i < count; i++) list[m++] = label[k];
+		}
+		int p = 0;
+		for (int i = 0; i < L; i += 2) g[i] = list[p++];
+		for (int i = 1; i < L; i += 2) g[i] = list[p++];
+		if (K < 2) return;
+		auto clash = [&](int i) {
+			int prev = (i + L - 1) % L, next = (i + 1) % L;
+			return (prev != i && g[prev] == g[i]) || (next != i && g[next] == g[i]);
+		};
+		// then shuffle it, using the dice, keeping repeats apart
+		for (int pass = 0; pass < 2; pass++) {
+			for (int i = 0; i < L; i++) {
+				float d = ring[i].d[D_GROUP] * (pass + 1);
+				int j = std::min(L - 1, (int) ((d - std::floor(d)) * L));
+				if (j == i || g[j] == g[i]) continue;
+				bool before = clash(i) || clash(j);
+				std::swap(g[i], g[j]);
+				if (!before && (clash(i) || clash(j))) std::swap(g[i], g[j]);
+			}
+		}
+	}
+
+	// The sample for each of the K sounds, all different when the window
+	// has room. Sound k uses step k's sample die.
+	void palette(const Controls& c, int n, int K, int* out) const {
+		int lo, size;
+		window(c, n, lo, size);
+		bool used[1024] = {};
+		for (int k = 0; k < K; k++) {
+			int off = std::min((int) (ring[k].d[D_SAMPLE] * size), size - 1);
+			if (size >= K && size <= 1024)
+				for (int t = 0; t < size && used[off]; t++) off = (off + 1) % size;
+			if (size <= 1024) used[off] = true;
+			out[k] = wrap(lo + off, n);
+		}
+	}
+
 	// Called on each trigger. Returns what happened.
 	const HitInfo& trigger(const Controls& c, const Bank* bank, float engineRate) {
 		HitInfo h;
@@ -233,6 +301,24 @@ struct DrumEngine {
 			return last;
 		}
 		h.index = pickIndex(c, n, s.d[D_SAMPLE], h.windowLo, h.windowSize);
+		int K = varietyCount(c);
+		if (K > 0) {
+			if (slotIndex >= 0) {
+				int g[MAX_LOOP];
+				groups(std::min(c.loop, MAX_LOOP), K, g);
+				h.group = g[slotIndex];
+			}
+			else {
+				// free mode: any sound but the last one
+				int x = std::min((int) (s.d[D_GROUP] * K), K - 1);
+				if (K >= 2 && x == lastGroup) x = (x + 1) % K;
+				h.group = x;
+			}
+			lastGroup = h.group;
+			int pal[MAX_LOOP];
+			palette(c, n, K, pal);
+			h.index = pal[h.group];
+		}
 		h.played = s.d[D_CHANCE] < c.chance;
 		const Sample& smp = bank->samples[h.index];
 

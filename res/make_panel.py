@@ -125,10 +125,12 @@ add(text("walk", 18.0, CTRL_Y + 4.6, 1.5, FONT_MED, SOFT))
 add(text("cycle", 22.9, CTRL_Y + 4.6, 1.5, FONT_MED, SOFT))
 add(text("choke", 49.2, CTRL_Y - 1.8, 1.6, FONT_MED, SOFT, anchor="start"))
 add(text("overlap", 49.2, CTRL_Y + 3.3, 1.6, FONT_MED, SOFT, anchor="start"))
-add(text("REROLL", 75.0, CTRL_Y + 0.8, 2.0, FONT_BOLD, INK, anchor="start"))
-add(text("new loop", 75.0, CTRL_Y + 3.6, 1.5, FONT_MED, SOFT, anchor="start"))
-add(text("drop a folder", W - 6.0, CTRL_Y - 0.4, 1.5, FONT_MED, SOFT, anchor="end"))
-add(text("on the screen", W - 6.0, CTRL_Y + 2.0, 1.5, FONT_MED, SOFT, anchor="end"))
+add(text("REROLL", 68.5, CTRL_Y + 0.8, 2.0, FONT_BOLD, INK, anchor="start"))
+add(text("new loop", 68.5, CTRL_Y + 3.6, 1.5, FONT_MED, SOFT, anchor="start"))
+add(text("VARIETY", 102.5, CTRL_Y + 0.8, 2.0, FONT_BOLD, TEAL, anchor="end"))
+add(text("sounds in loop", 102.5, CTRL_Y + 3.6, 1.5, FONT_MED, SOFT, anchor="end"))
+add(text("1", 103.6, CTRL_Y + 4.6, 1.4, FONT_MED, SOFT))
+add(text("all", 112.8, CTRL_Y + 4.6, 1.4, FONT_MED, SOFT))
 
 # jacks
 JACK_Y = 120.5

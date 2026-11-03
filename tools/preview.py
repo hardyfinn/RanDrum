@@ -61,7 +61,8 @@ for i in range(8):
     place("PJ301M", x + 6, SMALL_Y[r])
 place("CKSSThreeHorizontal_0", 18.0, 106.5)
 place("CKSS_0", 45.7, 106.5)
-place("VCVBezel", 70.0, 106.5)
+place("VCVBezel", 63.5, 106.5)
+knob("RoundSmallBlackKnob", 108.0, 106.5, 0.2, -R, R)
 for x in [14.5, 25.0, 35.5, 51.0, 61.5, 72.0, 82.5, 93.0, 103.5]:
     place("PJ301M", x, 120.5)
 W_MM = 121.92
@@ -115,17 +116,19 @@ function draw() {{
   const n = 24, lo = 4, size = 14, idx = 8, cw = ww/n, sy = H - 4.6*mm, sh = 2.6*mm;
   for (let i = 0; i < n; i++) {{ const off = ((i-lo)%n+n)%n; c.fillStyle = i==idx ? C.hot : (off < size ? C.win : C.dim); c.fillRect(wx+i*cw+1.5, sy, cw-3, sh); }}
   c.fillStyle = C.dim; c.fillRect(ringX0, pad*0.5, 3, H-pad);
-  const rcx = (ringX0+W)/2, rcy = H*0.54, rr = Math.min(W-ringX0, H)*0.34;
+  const rcx = (ringX0+W)/2, rcy = H*0.54, rr = Math.min(W-ringX0, H)*0.34*0.82;
   const plays = [1,1,0,1,1,1,0,1], lev = [1,0.5,0.8,0.7,1,0.4,0.9,0.6];
   for (let i = 0; i < 8; i++) {{
     const a = -Math.PI/2 + 2*Math.PI*i/8, x = rcx+rr*Math.cos(a), y = rcy+rr*Math.sin(a);
     const r = mm*(0.55+0.75*lev[i]), cur = i==2+1;
+    const lr = rr + 2.2*mm; c.textBaseline='middle'; t(rcx+lr*Math.cos(a), rcy+lr*Math.sin(a), 'ABACBCAB'[i], cur ? C.hot : C.win, 'center', fss*0.8); c.textBaseline='alphabetic';
     c.beginPath(); c.arc(x,y,r,0,2*Math.PI);
     if (plays[i]) {{ c.fillStyle = cur ? C.hot : C.ink; c.fill(); }} else {{ c.strokeStyle = cur ? C.hot : C.soft; c.lineWidth = 3; c.stroke(); }}
   }}
   c.textBaseline = 'middle';
   t(rcx, rcy-fs*0.15, '8', C.ink, 'center', fs*1.3);
   t(rcx, rcy+fs*0.95, 'mut 15%', C.soft, 'center', fss*0.9);
+  t(rcx, rcy+fs*1.85, '3 sounds', C.win, 'center', fss*0.9);
   c.textBaseline = 'alphabetic';
   t(rcx, pad+fs, 'LOOP', C.soft, 'center', fss);
   document.title = 'done';

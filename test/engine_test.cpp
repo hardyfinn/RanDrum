@@ -236,6 +236,44 @@ int main() {
 			CHECK(std::fabs(s.L[5] + 1000 / 32768.f) < 1e-6f && std::fabs(s.R[5] - 1000 / 32768.f) < 1e-6f);
 		}
 	}
+	// 16. VARIETY: exactly K sounds, spread so repeats never sit side by side
+	{
+		Bank b = makeBank(32);
+		for (int L = 2; L <= 16; L++)
+			for (int K = 1; K < L; K++) {
+				for (int trial = 0; trial < 20; trial++) {
+					DrumEngine e;
+					e.rng.seed(1000 + trial * 31 + L * 7 + K);
+					e.rerollAll();
+					Controls c; c.loop = L; c.mutate = 0.f; c.variety = K;
+					std::vector<int> idx;
+					for (int i = 0; i < L; i++) idx.push_back(e.trigger(c, &b, SR).index);
+					std::set<int> distinct(idx.begin(), idx.end());
+					CHECK((int) distinct.size() == K);
+					// side by side (around the loop) only when it can't be avoided
+					bool possible = K >= 3 || (K == 2 && L % 2 == 0);
+					if (possible)
+						for (int i = 0; i < L; i++) CHECK(idx[i] != idx[(i + 1) % L]);
+					// and it repeats
+					for (int i = 0; i < L; i++) CHECK(e.trigger(c, &b, SR).index == idx[i]);
+				}
+			}
+		// free mode: never the same sound twice in a row, only K sounds
+		DrumEngine e;
+		Controls c; c.loop = 0; c.variety = 3;
+		std::set<int> seen;
+		int prev = -1;
+		for (int i = 0; i < 300; i++) {
+			int k = e.trigger(c, &b, SR).index;
+			CHECK(k != prev);
+			seen.insert(k);
+			prev = k;
+		}
+		CHECK(seen.size() == 3);
+		// walk mode ignores VARIETY
+		c.mode = PICK_WALK; c.loop = 8; c.variety = 2;
+		CHECK(DrumEngine::varietyCount(c) == 0);
+	}
 	std::printf(fails ? "%d FAILED\n" : "all tests passed\n", fails);
 	return fails ? 1 : 0;
 }

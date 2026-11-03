@@ -36,6 +36,16 @@ tamer.
 - **MUTATE**: on every hit, the chance that each die is rolled again. At zero
   the loop is locked. Around 5-15% it changes a little each time round. Full
   CW is pure noise.
+- **VARIETY**: how many different samples the loop uses, from 1 up to
+  **all** (fully CW, the default). At 3, an 8-step loop uses three sounds,
+  each repeated, and a repeat never lands on the step next to itself (around
+  the end of the loop too), so you get patterns like `A B A C B C A B` rather
+  than `A A B B`. Each sound gets an even share of the steps. Which sounds and
+  in what order are part of the dice, so MUTATE changes them slowly and
+  REROLL picks new ones. The screen puts the letter of each step's sound
+  around the LOOP ring. VARIETY works in **rnd** pick mode (walk and cycle
+  already repeat sounds in their own way). With LOOP on free, each hit picks
+  one of the VARIETY sounds, never the same one twice in a row.
 - **REROLL** (button or gate): roll the whole loop again in one go.
 - **RESET**: the next hit is the first of the loop. Patch the bar or pattern
   reset here to keep the loop lined up with your other parts.

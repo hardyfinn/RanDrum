@@ -8,12 +8,15 @@
 #include "DrumEngine.hpp"
 #include <osdialog.h>
 #include <atomic>
+#include <memory>
+#include <mutex>
+#include <thread>
 #include <algorithm>
 #include <cctype>
 
 using namespace rb;
 
-static const int MAX_FILES = 256;
+static const int MAX_FILES = 1024;
 
 // ---- knob readouts -----------------------------------------------------------
 struct DecayQuantity : ParamQuantity {
@@ -71,17 +74,21 @@ struct Randrum : Module {
 	enum LightId { HIT_LIGHT, SKIP_LIGHT, REROLL_LIGHT, LIGHTS_LEN };
 
 	DrumEngine engine;
-	// Banks are built on the UI thread and handed over through `pending`.
-	// The audio thread swaps it in and parks the old one in `retired`, which
-	// the UI thread then deletes.
-	std::atomic<Bank*> pending{nullptr};
-	std::atomic<Bank*> retired{nullptr};
-	Bank* bank = nullptr;              // the one being played (audio thread)
-	std::atomic<Bank*> shown{nullptr}; // what the display draws (same as bank)
+	// Banks are built on a loader thread and published in `uiBank` (read and
+	// written with std::atomic_load/atomic_store). The audio thread notices the
+	// version change and takes its own copy, so the screen never waits for it.
+	std::shared_ptr<Bank> uiBank;
+	std::atomic<int> bankVersion{0};
+	std::shared_ptr<Bank> audioBank;   // audio thread only
+	std::atomic<int> audioVersion{0};
 
+	std::thread loader;
+	std::atomic<bool> loading{false};
+	std::mutex textMutex;              // guards folder and loadMessage
 	std::string folder;
 	std::string loadMessage;
 	bool quantise = false;
+	bool subfolders = true;
 
 	dsp::SchmittTrigger trigIn, resetIn, rerollIn, rerollBtn;
 	dsp::PulseGenerator hitPulse, skipPulse;
@@ -139,9 +146,7 @@ struct Randrum : Module {
 	}
 
 	~Randrum() {
-		delete pending.exchange(nullptr);
-		delete retired.exchange(nullptr);
-		delete bank;
+		if (loader.joinable()) loader.join();
 	}
 
 	float cv(int input, float scale) {
@@ -175,16 +180,14 @@ struct Randrum : Module {
 	}
 
 	void process(const ProcessArgs& args) override {
-		// take a new bank if one is waiting and the old one has been cleared up
-		if (pending.load() && !retired.load()) {
-			Bank* nb = pending.exchange(nullptr);
-			if (nb) {
-				engine.stopAll();
-				retired.store(bank);
-				bank = nb;
-				shown.store(bank);
-			}
+		// pick up a newly loaded folder
+		int v = bankVersion.load();
+		if (v != audioVersion.load()) {
+			engine.stopAll();
+			audioBank = std::atomic_load(&uiBank);
+			audioVersion.store(v);
 		}
+		Bank* bank = audioBank.get();
 
 		if (resetIn.process(inputs[RESET_INPUT].getVoltage(), 0.1f, 1.f)) engine.reset();
 		bool rr = rerollBtn.process(params[REROLL_PARAM].getValue());
@@ -233,46 +236,114 @@ struct Randrum : Module {
 		return s;
 	}
 
-	static std::vector<std::string> wavFiles(const std::string& dir) {
-		std::vector<std::string> out;
-		for (const std::string& p : system::getEntries(dir)) {
-			std::string fn = system::getFilename(p);
-			if (fn.empty() || fn[0] == '.') continue;  // skip hidden and macOS "._" files
-			if (lower(system::getExtension(p)) == ".wav" && system::isFile(p)) out.push_back(p);
-		}
-		std::sort(out.begin(), out.end(), [](const std::string& a, const std::string& b) { return lower(a) < lower(b); });
-		if ((int) out.size() > MAX_FILES) out.resize(MAX_FILES);
-		return out;
+	static bool isAudioFile(const std::string& p) {
+		std::string e = lower(system::getExtension(p));
+		return e == ".wav" || e == ".wave" || e == ".aif" || e == ".aiff" || e == ".aifc";
 	}
 
-	// Returns a message for the user, or "" when all went well.
-	std::string loadFolder(const std::string& dir) {
-		if (!system::isDirectory(dir)) return "That folder could not be found:\n" + dir;
-		Bank* b = new Bank;
+	std::string getFolder() {
+		std::lock_guard<std::mutex> lock(textMutex);
+		return folder;
+	}
+	std::string getMessage() {
+		std::lock_guard<std::mutex> lock(textMutex);
+		return loadMessage;
+	}
+	void setText(const std::string& f, const std::string& m) {
+		std::lock_guard<std::mutex> lock(textMutex);
+		folder = f;
+		loadMessage = m;
+	}
+
+	// Builds a bank from a folder (and its subfolders). Runs on the loader thread.
+	// On failure returns nullptr and puts the reason in `err`.
+	static std::shared_ptr<Bank> buildBank(const std::string& dir, bool sub, std::string& err, std::string& note) {
+		if (!system::isDirectory(dir)) {
+			err = "folder not found";
+			return nullptr;
+		}
+		std::vector<std::string> entries = system::getEntries(dir, sub ? 8 : 0);
+		if (entries.empty()) {
+			err = "can't see inside: empty, or macOS blocks Rack";
+			return nullptr;
+		}
+		// relative path (for the name and the order) -> full path
+		std::vector<std::pair<std::string, std::string>> files;
+		std::string base = dir;
+		while (base.size() > 1 && (base.back() == '/' || base.back() == '\\')) base.pop_back();
+		for (const std::string& p : entries) {
+			std::string rel = p.size() > base.size() + 1 && p.compare(0, base.size(), base) == 0 ? p.substr(base.size() + 1) : system::getFilename(p);
+			if (rel.empty() || rel[0] == '.' || rel.find("/.") != std::string::npos) continue;  // hidden files, macOS "._" files
+			if (!isAudioFile(p) || !system::isFile(p)) continue;
+			files.push_back({rel, p});
+		}
+		std::sort(files.begin(), files.end(), [](const std::pair<std::string, std::string>& a, const std::pair<std::string, std::string>& b) {
+			return lower(a.first) < lower(b.first);
+		});
+		if (files.empty()) {
+			err = sub ? "no WAV or AIFF files in here" : "no WAV/AIFF files (subfolders off)";
+			return nullptr;
+		}
+		bool capped = (int) files.size() > MAX_FILES;
+		if (capped) files.resize(MAX_FILES);
+		std::shared_ptr<Bank> b = std::make_shared<Bank>();
 		b->folder = dir;
 		int skipped = 0;
-		for (const std::string& p : wavFiles(dir)) {
+		std::string firstErr;
+		for (const auto& f : files) {
 			Sample s;
-			if (readWav(p, s).empty()) {
-				s.name = system::getStem(p);
+			std::string e = readSample(f.second, s);
+			if (e.empty()) {
+				std::string name = f.first;
+				size_t dot = name.find_last_of('.');
+				if (dot != std::string::npos && dot > name.find_last_of('/') + 1) name = name.substr(0, dot);
+				s.name = name;
 				b->samples.push_back(std::move(s));
 			}
-			else skipped++;
+			else {
+				skipped++;
+				if (firstErr.empty()) firstErr = system::getFilename(f.second) + ": " + e;
+				WARN("Randrum: could not read %s: %s", f.second.c_str(), e.c_str());
+			}
 		}
 		if (b->samples.empty()) {
-			delete b;
-			return "No WAV files in that folder that Randrum can read:\n" + dir;
+			err = string::f("%d files, none readable. ", skipped) + firstErr;
+			return nullptr;
 		}
-		folder = dir;
-		delete pending.exchange(b);
-		loadMessage = skipped ? string::f("%d file(s) could not be read", skipped) : "";
-		return "";
+		if (skipped) note = string::f("%d unreadable", skipped);
+		else if (capped) note = string::f("first %d files", MAX_FILES);
+		INFO("Randrum: loaded %d samples from %s", b->size(), dir.c_str());
+		return b;
+	}
+
+	// Starts loading a folder in the background. The screen shows the result.
+	void loadFolder(const std::string& dir) {
+		if (loader.joinable()) loader.join();
+		loading = true;
+		bool sub = subfolders;
+		loader = std::thread([this, dir, sub]() {
+			std::string err, note;
+			std::shared_ptr<Bank> b = buildBank(dir, sub, err, note);
+			if (b) {
+				std::atomic_store(&uiBank, b);
+				bankVersion++;
+				setText(dir, note);
+			}
+			else {
+				WARN("Randrum: could not load %s: %s", dir.c_str(), err.c_str());
+				// keep playing the old folder, but say what went wrong
+				std::shared_ptr<Bank> old = std::atomic_load(&uiBank);
+				setText(old ? old->folder : dir, system::getFilename(dir) + ": " + err);
+			}
+			loading = false;
+		});
 	}
 
 	std::vector<std::string> siblingFolders() {
 		std::vector<std::string> out;
-		if (folder.empty()) return out;
-		std::string parent = system::getDirectory(folder);
+		std::string f = getFolder();
+		if (f.empty()) return out;
+		std::string parent = system::getDirectory(f);
 		if (parent.empty() || !system::isDirectory(parent)) return out;
 		for (const std::string& p : system::getEntries(parent)) {
 			std::string fn = system::getFilename(p);
@@ -286,19 +357,18 @@ struct Randrum : Module {
 	void stepFolder(int dir) {
 		std::vector<std::string> sib = siblingFolders();
 		if (sib.empty()) return;
+		std::string f = getFolder();
 		int cur = -1;
-		for (int i = 0; i < (int) sib.size(); i++) if (sib[i] == folder) cur = i;
+		for (int i = 0; i < (int) sib.size(); i++) if (sib[i] == f) cur = i;
 		int n = (int) sib.size();
-		for (int k = 1; k <= n; k++) {
-			int i = ((cur + dir * k) % n + n) % n;
-			if (!wavFiles(sib[i]).empty() && loadFolder(sib[i]).empty()) return;
-		}
+		loadFolder(sib[((cur + dir) % n + n) % n]);
 	}
 
 	// ---- patch storage --------------------------------------------------------
 	json_t* dataToJson() override {
 		json_t* root = json_object();
-		json_object_set_new(root, "folder", json_string(folder.c_str()));
+		json_object_set_new(root, "folder", json_string(getFolder().c_str()));
+		json_object_set_new(root, "subfolders", json_boolean(subfolders));
 		json_object_set_new(root, "quantise", json_boolean(quantise));
 		json_t* ring = json_array();
 		for (int i = 0; i < MAX_LOOP; i++)
@@ -310,6 +380,8 @@ struct Randrum : Module {
 	void dataFromJson(json_t* root) override {
 		json_t* q = json_object_get(root, "quantise");
 		quantise = q ? json_boolean_value(q) : false;
+		json_t* sf = json_object_get(root, "subfolders");
+		subfolders = sf ? json_boolean_value(sf) : true;
 		json_t* ring = json_object_get(root, "dice");
 		if (ring && json_array_size(ring) == (size_t) (MAX_LOOP * NUM_DICE)) {
 			for (int i = 0; i < MAX_LOOP; i++)
@@ -320,10 +392,8 @@ struct Randrum : Module {
 		json_t* f = json_object_get(root, "folder");
 		if (f && json_string_value(f) && *json_string_value(f)) {
 			std::string dir = json_string_value(f);
-			if (loadFolder(dir) != "") {
-				folder = dir;  // keep the path so the display can say what is missing
-				loadMessage = "folder not found";
-			}
+			setText(dir, "");
+			loadFolder(dir);
 		}
 	}
 };
@@ -341,6 +411,7 @@ static const NVGcolor C_SKIP = nvgRGB(0x6C, 0x5C, 0xA8);
 
 struct RandrumDisplay : Widget {
 	Randrum* module = nullptr;
+	double waitStart = -1.0;
 
 	void rect(NVGcontext* vg, float x, float y, float w, float h, NVGcolor c) {
 		nvgBeginPath(vg);
@@ -375,7 +446,15 @@ struct RandrumDisplay : Widget {
 			text(vg, W / 2, H / 2, "RANDROM  -  dice for drums", C_INK, C, fs);
 			return;
 		}
-		Bank* bank = module->shown.load();
+		std::shared_ptr<Bank> bankRef = std::atomic_load(&module->uiBank);
+		Bank* bank = bankRef.get();
+		std::string folder = module->getFolder(), msg = module->getMessage();
+		// is the audio engine picking up new folders?
+		if (module->bankVersion.load() != module->audioVersion.load()) {
+			if (waitStart < 0.0) waitStart = system::getTime();
+		}
+		else waitStart = -1.0;
+		bool engineStuck = waitStart >= 0.0 && system::getTime() - waitStart > 1.5;
 		const Controls& c = module->shownCtl;
 		const HitInfo& h = module->engine.last;
 		float ringX0 = W * 0.72f;
@@ -384,13 +463,24 @@ struct RandrumDisplay : Widget {
 		// top line: folder and mode
 		static const char* modes[] = {"RANDOM", "WALK", "CYCLE"};
 		if (!bank) {
-			text(vg, pad, pad + fs, module->folder.empty() ? "NO FOLDER" : "MISSING: " + clip(system::getFilename(module->folder), 22), C_HOT, L, fs);
-			text(vg, leftW / 2 + pad, H * 0.5f, "right-click > Load folder", C_INK, C, fs);
-			text(vg, leftW / 2 + pad, H * 0.5f + fs * 1.4f, "or drop a folder of WAVs here", C_SOFT, C, fss);
+			std::string head = module->loading ? "LOADING " + clip(system::getFilename(folder), 20)
+			                 : folder.empty() ? "NO FOLDER" : clip(system::getFilename(folder), 26);
+			text(vg, pad, pad + fs, head, module->loading ? C_INK : C_HOT, L, fs);
+			if (!msg.empty() && !module->loading) {
+				// the reason, over up to three lines
+				float y = H * 0.38f;
+				for (size_t i = 0; i < msg.size() && i < 3 * 34; i += 34, y += fss * 1.25f)
+					text(vg, leftW / 2 + pad, y, msg.substr(i, 34), C_HOT, C, fss);
+				text(vg, leftW / 2 + pad, H - pad - fss * 0.3f, "right-click > Load folder, or drop one here", C_SOFT, C, fss * 0.9f);
+			}
+			else if (!module->loading) {
+				text(vg, leftW / 2 + pad, H * 0.5f, "right-click > Load folder", C_INK, C, fs);
+				text(vg, leftW / 2 + pad, H * 0.5f + fs * 1.4f, "or drop a folder of samples here", C_SOFT, C, fss);
+			}
 		}
 		else {
 			int n = bank->size();
-			text(vg, pad, pad + fs, clip(system::getFilename(bank->folder), 20) + string::f("  %d", n), C_INK, L, fs);
+			text(vg, pad, pad + fs, (module->loading ? "LOADING.. " : "") + clip(system::getFilename(bank->folder), 20) + string::f("  %d", n), C_INK, L, fs);
 			text(vg, ringX0 - pad, pad + fs, modes[(int) c.mode] + std::string(c.choke ? " CHOKE" : ""), C_SOFT, R, fss);
 
 			// second line: the last hit
@@ -506,8 +596,10 @@ struct RandrumDisplay : Widget {
 			text(vg, rcx, rcy + fs * 0.95f, string::f("mut %.0f%%", c.mutate * 100), C_SOFT, C, fss * 0.9f);
 		}
 		text(vg, rcx, pad + fs, "LOOP", C_SOFT, NVG_ALIGN_CENTER | NVG_ALIGN_BASELINE, fss);
-		if (!module->loadMessage.empty())
-			text(vg, rcx, H - pad * 0.6f, clip(module->loadMessage, 18), C_HOT, NVG_ALIGN_CENTER | NVG_ALIGN_BASELINE, fss * 0.8f);
+		if (engineStuck)
+			text(vg, rcx, H - pad * 0.6f, "audio engine stopped?", C_HOT, NVG_ALIGN_CENTER | NVG_ALIGN_BASELINE, fss * 0.8f);
+		else if (bank && !msg.empty())
+			text(vg, rcx, H - pad * 0.6f, clip(msg, 22), C_HOT, NVG_ALIGN_CENTER | NVG_ALIGN_BASELINE, fss * 0.8f);
 	}
 };
 
@@ -567,49 +659,47 @@ struct RandrumWidget : ModuleWidget {
 		addChild(createLightCentered<SmallLight<BlueLight>>(mm2px(Vec(OUT_X[4] + 4.4f, JACK_Y - 5.4f)), module, Randrum::SKIP_LIGHT));
 	}
 
-	void step() override {
-		ModuleWidget::step();
-		Randrum* m = dynamic_cast<Randrum*>(module);
-		if (m) delete m->retired.exchange(nullptr);
-	}
-
 	void onPathDrop(const PathDropEvent& e) override {
 		Randrum* m = dynamic_cast<Randrum*>(module);
 		if (!m || e.paths.empty()) return;
 		std::string p = e.paths[0];
-		std::string dir = system::isDirectory(p) ? p : system::getDirectory(p);
-		std::string err = m->loadFolder(dir);
-		if (!err.empty()) osdialog_message(OSDIALOG_WARNING, OSDIALOG_OK, err.c_str());
+		while (p.size() > 1 && p.back() == '/') p.pop_back();
+		m->loadFolder(system::isDirectory(p) ? p : system::getDirectory(p));
 		e.consume(this);
 	}
 
 	void appendContextMenu(Menu* menu) override {
 		Randrum* m = dynamic_cast<Randrum*>(module);
 		if (!m) return;
+		std::string folder = m->getFolder();
 		menu->addChild(new MenuSeparator);
-		menu->addChild(createMenuLabel(m->folder.empty() ? "No folder loaded" : "Folder: " + m->folder));
+		menu->addChild(createMenuLabel(folder.empty() ? "No folder loaded" : "Folder: " + folder));
 		menu->addChild(createMenuItem("Load folder...", "", [=]() {
-			std::string start = m->folder.empty() ? "" : system::getDirectory(m->folder);
+			std::string start = folder.empty() ? "" : system::getDirectory(folder);
 			char* path = osdialog_file(OSDIALOG_OPEN_DIR, start.empty() ? NULL : start.c_str(), NULL, NULL);
 			if (!path) return;
-			std::string err = m->loadFolder(path);
+			std::string p = path;
 			std::free(path);
-			if (!err.empty()) osdialog_message(OSDIALOG_WARNING, OSDIALOG_OK, err.c_str());
+			m->loadFolder(p);
 		}));
-		if (!m->folder.empty()) {
+		menu->addChild(createBoolMenuItem("Include subfolders", "",
+			[=]() { return m->subfolders; },
+			[=](bool v) {
+				m->subfolders = v;
+				std::string f = m->getFolder();
+				if (!f.empty()) m->loadFolder(f);
+			}));
+		if (!folder.empty()) {
 			menu->addChild(createMenuItem("Next folder", "", [=]() { m->stepFolder(1); }));
 			menu->addChild(createMenuItem("Previous folder", "", [=]() { m->stepFolder(-1); }));
 			menu->addChild(createSubmenuItem("Folders next to this one", "", [=](Menu* sub) {
 				for (const std::string& p : m->siblingFolders()) {
 					sub->addChild(createCheckMenuItem(system::getFilename(p), "",
-						[=]() { return p == m->folder; },
-						[=]() {
-							std::string err = m->loadFolder(p);
-							if (!err.empty()) osdialog_message(OSDIALOG_WARNING, OSDIALOG_OK, err.c_str());
-						}));
+						[=]() { return p == m->getFolder(); },
+						[=]() { m->loadFolder(p); }));
 				}
 			}));
-			menu->addChild(createMenuItem("Reload folder", "", [=]() { m->loadFolder(m->folder); }));
+			menu->addChild(createMenuItem("Reload folder", "", [=]() { m->loadFolder(m->getFolder()); }));
 		}
 		menu->addChild(new MenuSeparator);
 		menu->addChild(createBoolPtrMenuItem("Random pitch in whole semitones", "", &m->quantise));

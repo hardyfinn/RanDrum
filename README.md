@@ -1,7 +1,7 @@
 # Randrum
 
 A VCV Rack 2 drum sample player that rolls dice on every hit. Load a folder of
-WAV files, send it triggers, and each hit picks a sample and a pitch, decay,
+WAV or AIFF files, send it triggers, and each hit picks a sample and a pitch, decay,
 start point, level, pan and direction, inside ranges you set with the knobs.
 **LOOP** and **MUTATE** turn those dice rolls into a pattern that repeats and
 slowly rewrites itself, so a random part can sit still long enough to groove
@@ -12,7 +12,8 @@ and then drift somewhere new.
 ## Getting sound out of it
 
 1. Right-click the module and choose **Load folder...**, or drag a folder (or
-   any WAV inside it) from Finder onto the screen.
+   any sample inside it) from Finder onto the screen. Subfolders are included,
+   so you can drop a whole sample library.
 2. Patch a clock or gate sequencer into **TRIG**, and **OUT L** into your mixer.
 3. Turn **SPREAD** down to narrow which samples it picks from, and use
    **SAMPLE** to move that window through the folder.
@@ -86,6 +87,7 @@ tamer.
 
 ## Right-click menu
 
+- **Include subfolders** (on by default).
 - **Load folder...**, **Next folder**, **Previous folder**, **Folders next to
   this one**: handy when your kits sit side by side in one parent folder.
 - **Reload folder** after adding files.
@@ -95,8 +97,13 @@ tamer.
 The folder path and the loop's dice are saved with the patch. The samples
 themselves are not copied into the patch, so keep the folder where it is.
 
-Up to 256 WAV files per folder (8/16/24/32-bit, or float), up to 30 seconds
-each, any sample rate.
+Up to 1024 WAV or AIFF files per folder, counting subfolders (8/16/24/32-bit
+PCM or 32/64-bit float, any sample rate, mono or stereo), up to 30 seconds
+each. Files are ordered by their path, so subfolders stay together. If a
+folder won't load, the screen says why. "macOS blocks Rack" means Rack needs
+permission for that location: System Settings > Privacy & Security > Files and
+Folders (or Full Disk Access) > VCV Rack 2. Rack's `log.txt` lists every file
+that couldn't be read.
 
 ## Building
 

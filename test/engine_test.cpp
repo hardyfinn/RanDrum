@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <set>
+#include <cstring>
 using namespace rb;
 
 static int fails = 0;
@@ -36,6 +37,30 @@ static void writeTestWav(const char* path, int bits, int ch, int rate, int frame
 		if (bits == 16) w16((uint16_t) (int16_t) v);
 		else { int32_t x = v << 8; std::fwrite(&x, 3, 1, f); }
 	}
+	std::fclose(f);
+}
+
+static void writeTestAiff(const char* path, bool aifc, const char* comp, int frames) {
+	// 16-bit stereo 44.1 kHz, samples -1000 (L) and +1000 (R)
+	std::vector<uint8_t> v;
+	auto b32 = [&](uint32_t x) { for (int i = 3; i >= 0; i--) v.push_back((x >> (8 * i)) & 0xFF); };
+	auto b16 = [&](uint16_t x) { v.push_back(x >> 8); v.push_back(x & 0xFF); };
+	auto tag = [&](const char* t) { v.insert(v.end(), t, t + 4); };
+	bool little = comp && !std::strcmp(comp, "sowt");
+	tag("FORM"); b32(0); tag(aifc ? "AIFC" : "AIFF");
+	tag("COMM"); b32(aifc ? 24 : 18); b16(2); b32(frames); b16(16);
+	const uint8_t r44[10] = {0x40, 0x0E, 0xAC, 0x44, 0, 0, 0, 0, 0, 0};
+	v.insert(v.end(), r44, r44 + 10);
+	if (aifc) { tag(comp); v.push_back(0); v.push_back(0); }  // empty pascal string
+	tag("SSND"); b32(8 + frames * 4); b32(0); b32(0);
+	for (int i = 0; i < frames * 2; i++) {
+		uint16_t x = (uint16_t) (int16_t) ((i % 2) ? 1000 : -1000);
+		if (little) { v.push_back(x & 0xFF); v.push_back(x >> 8); } else b16(x);
+	}
+	uint32_t n = v.size() - 8;
+	v[4] = n >> 24; v[5] = n >> 16; v[6] = n >> 8; v[7] = n;
+	FILE* f = std::fopen(path, "wb");
+	std::fwrite(v.data(), 1, v.size(), f);
 	std::fclose(f);
 }
 
@@ -198,6 +223,18 @@ int main() {
 		int n = 0;
 		while (e.activeVoices() && n < 100000) { e.process(SR, L, R, M); n++; }
 		CHECK(n >= 4798 && n <= 4802);
+	}
+	// 15. AIFF: plain, AIFC big-endian, AIFC little-endian (sowt)
+	{
+		const char* comps[3] = {nullptr, "NONE", "sowt"};
+		for (int k = 0; k < 3; k++) {
+			writeTestAiff("/tmp/rb_t.aif", k > 0, comps[k], 700);
+			Sample s;
+			std::string err = readSample("/tmp/rb_t.aif", s);
+			CHECK(err == "");
+			CHECK(s.frames() == 700 && s.R.size() == 700 && s.rate == 44100);
+			CHECK(std::fabs(s.L[5] + 1000 / 32768.f) < 1e-6f && std::fabs(s.R[5] - 1000 / 32768.f) < 1e-6f);
+		}
 	}
 	std::printf(fails ? "%d FAILED\n" : "all tests passed\n", fails);
 	return fails ? 1 : 0;

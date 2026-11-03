@@ -1,0 +1,23 @@
+{
+  "slug": "Randrum",
+  "name": "Randrum",
+  "version": "2.0.0",
+  "license": "GPL-3.0-or-later",
+  "brand": "Haer",
+  "author": "Haer",
+  "authorEmail": "",
+  "authorUrl": "",
+  "pluginUrl": "",
+  "manualUrl": "",
+  "sourceUrl": "https://github.com/hardyfinn/randrum",
+  "donateUrl": "",
+  "changelogUrl": "",
+  "modules": [
+    {
+      "slug": "Randrum",
+      "name": "Randrum",
+      "description": "Drum sample player that rolls dice on every hit: sample, pitch, decay, start, level, pan, reverse and chance. LOOP and MUTATE turn the rolls into a repeating pattern that slowly rewrites itself",
+      "tags": ["Sampler", "Drum", "Random"]
+    }
+  ]
+}

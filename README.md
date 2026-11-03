@@ -50,6 +50,36 @@ tamer.
 - **RESET**: the next hit is the first of the loop. Patch the bar or pattern
   reset here to keep the loop lined up with your other parts.
 
+## Patterns: MEMORY, morph and ratchets
+
+The column on the right (added in 2.3, which made the module 28 HP wide):
+
+- **A, B, C, D**: four pattern memories. Press **SAVE** (it lights), then a
+  letter, to store the loop's dice there. A dim light means the slot holds a
+  pattern, and a bright one is the pattern the loop came from. The screen
+  shows `LOOP A`, or `LOOP A~` once MUTATE has changed it.
+- **jump / morph** switch, for what pressing a letter does:
+  - **jump**: the loop switches to that pattern at the start of the next
+    loop, so it stays in time. The letter blinks and the screen says
+    `B next` until then. (Right-click > *JUMP changes pattern straight away*
+    switches immediately.)
+  - **morph**: the letter becomes a *target*. MUTATE now copies the target's
+    dice instead of rolling new ones, so the loop drifts toward the target
+    one die at a time, at a speed set by MUTATE. The screen shows how far it
+    has got (`> B 63%`). Press the letter again to go back to random mutation.
+- **PAT CV**: 0-10 V picks A, B, C or D (2.5 V each). Sequence your song
+  sections from Ableton or a slow stepped CV.
+- **RATCHET** (+ CV): the chance that a step plays a roll of 2, 3 or 4 quick
+  repeats instead of one hit. Repeats are spaced evenly across the time until
+  the next trigger, and each is a little quieter. Which steps roll is part of
+  the dice, so rolls repeat with the loop. They show on the screen as a yellow
+  ring around the step, and `x3` on the second line. Every repeat also fires
+  **HIT**.
+
+Saved patterns are kept in the patch. They hold the dice, not the knob
+settings, so the same pattern can still be made tamer or wilder with the RND
+knobs.
+
 ## Controls
 
 | Block | Big knob | Small knob | CV jack |

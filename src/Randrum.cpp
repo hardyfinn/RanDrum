@@ -70,16 +70,18 @@ struct Randrum : Module {
 		MUTATE_PARAM, LOOP_PARAM,
 		MODE_PARAM, CHOKE_PARAM, REROLL_PARAM,
 		VARIETY_PARAM,
+		ENUMS(MEM_PARAM, NUM_MEMORY), SAVE_PARAM, MORPH_PARAM, RATCHET_PARAM,
 		PARAMS_LEN
 	};
 	enum InputId {
 		SAMPLE_INPUT, VOCT_INPUT, DECAY_INPUT, START_INPUT,
 		CHANCE_INPUT, VEL_INPUT, PAN_INPUT, MUTATE_INPUT,
 		TRIG_INPUT, RESET_INPUT, REROLL_INPUT,
+		PATTERN_INPUT, RATCHET_INPUT,
 		INPUTS_LEN
 	};
 	enum OutputId { OUT_L_OUTPUT, OUT_R_OUTPUT, ENV_OUTPUT, HIT_OUTPUT, SKIP_OUTPUT, IDX_OUTPUT, OUTPUTS_LEN };
-	enum LightId { HIT_LIGHT, SKIP_LIGHT, REROLL_LIGHT, LIGHTS_LEN };
+	enum LightId { HIT_LIGHT, SKIP_LIGHT, REROLL_LIGHT, ENUMS(MEM_LIGHT, NUM_MEMORY), SAVE_LIGHT, LIGHTS_LEN };
 
 	DrumEngine engine;
 	// Banks are built on a loader thread and published in `uiBank` (read and
@@ -98,7 +100,14 @@ struct Randrum : Module {
 	bool quantise = false;
 	bool subfolders = true;
 
-	dsp::SchmittTrigger trigIn, resetIn, rerollIn, rerollBtn;
+	dsp::SchmittTrigger trigIn, resetIn, rerollIn, rerollBtn, saveBtn;
+	dsp::SchmittTrigger memBtn[NUM_MEMORY];
+	bool saveArmed = false;
+	float saveTimer = 0.f;
+	int patIn = -1;              // last slot chosen by the PAT CV
+	double sinceTrig = 0.0;      // samples since the last trigger, for ratchets
+	double period = 0.0;
+	float blink = 0.f;
 	dsp::PulseGenerator hitPulse, skipPulse;
 	float idxVolts = 0.f;
 	Controls shownCtl;                 // for the display
@@ -128,6 +137,13 @@ struct Randrum : Module {
 		configButton(REROLL_PARAM, "Re-roll the whole loop");
 		configParam<VarietyQuantity>(VARIETY_PARAM, 1.f, (float) MAX_LOOP, (float) MAX_LOOP, "Variety (how many different samples, in pick mode rnd)");
 		getParamQuantity(VARIETY_PARAM)->snapEnabled = true;
+		for (int k = 0; k < NUM_MEMORY; k++)
+			configButton(MEM_PARAM + k, string::f("Pattern %c (press SAVE first to store here)", 'A' + k));
+		configButton(SAVE_PARAM, "Save: then press A-D to store the loop there");
+		configSwitch(MORPH_PARAM, 0.f, 1.f, 0.f, "Recall", {"Jump (at the start of the loop)", "Morph (MUTATE moves the loop toward it)"});
+		configParam(RATCHET_PARAM, 0.f, 1.f, 0.f, "Ratchet (chance a step rolls 2-4 quick repeats)", "%", 0.f, 100.f);
+		configInput(PATTERN_INPUT, "Pattern select (0-10 V: A, B, C, D)");
+		configInput(RATCHET_INPUT, "Ratchet CV (+-10 V)");
 
 		configInput(SAMPLE_INPUT, "Sample CV (0-10 V sweeps the folder)");
 		configInput(VOCT_INPUT, "Pitch V/OCT");
@@ -186,6 +202,8 @@ struct Randrum : Module {
 		c.mode = (PickMode) clamp((int) std::round(params[MODE_PARAM].getValue()), 0, 2);
 		c.choke = params[CHOKE_PARAM].getValue() > 0.5f;
 		c.variety = clamp((int) std::round(params[VARIETY_PARAM].getValue()), 1, MAX_LOOP);
+		c.ratchet = clamp(params[RATCHET_PARAM].getValue() + cv(RATCHET_INPUT, 10.f), 0.f, 1.f);
+		c.morph = params[MORPH_PARAM].getValue() > 0.5f;
 		c.quantise = quantise;
 		return c;
 	}
@@ -204,11 +222,55 @@ struct Randrum : Module {
 		bool rr = rerollBtn.process(params[REROLL_PARAM].getValue());
 		rr |= rerollIn.process(inputs[REROLL_INPUT].getVoltage(), 0.1f, 1.f);
 		if (rr) engine.rerollAll();
+
+		// pattern memory
+		bool morph = params[MORPH_PARAM].getValue() > 0.5f;
+		bool loopOn = std::round(params[LOOP_PARAM].getValue()) > 0;
+		if (saveBtn.process(params[SAVE_PARAM].getValue())) {
+			saveArmed = !saveArmed;
+			saveTimer = 0.f;
+		}
+		if (saveArmed && (saveTimer += args.sampleTime) > 4.f) saveArmed = false;
+		for (int k = 0; k < NUM_MEMORY; k++) {
+			if (!memBtn[k].process(params[MEM_PARAM + k].getValue())) continue;
+			if (saveArmed) {
+				engine.save(k);
+				saveArmed = false;
+			}
+			else engine.select(k, morph, loopOn);
+		}
+		if (inputs[PATTERN_INPUT].isConnected()) {
+			int k = clamp((int) (inputs[PATTERN_INPUT].getVoltage() / 2.5f), 0, NUM_MEMORY - 1);
+			if (k != patIn) {
+				patIn = k;
+				// CV picks the target in MORPH (and doesn't toggle it off)
+				if (morph) {
+					if (engine.target != k) engine.select(k, true, loopOn);
+				}
+				else if (engine.current != k || engine.pending >= 0) engine.select(k, false, loopOn);
+			}
+		}
+		else patIn = -1;
+		blink += args.sampleTime * 3.f;
+		if (blink >= 1.f) blink -= 1.f;
+		bool on = blink < 0.5f;
+		for (int k = 0; k < NUM_MEMORY; k++) {
+			float b = 0.f;
+			if (engine.memory[k].used) b = 0.15f;
+			if (k == engine.current) b = 1.f;
+			if (k == engine.pending || k == engine.target) b = on ? 1.f : 0.15f;
+			if (saveArmed) b = on ? 0.6f : 0.f;
+			lights[MEM_LIGHT + k].setBrightness(b);
+		}
+		lights[SAVE_LIGHT].setBrightness(saveArmed ? 1.f : 0.f);
+		sinceTrig += 1.0;
 		lights[REROLL_LIGHT].setBrightnessSmooth(params[REROLL_PARAM].getValue() > 0.f ? 1.f : 0.f, args.sampleTime);
 
 		if (trigIn.process(inputs[TRIG_INPUT].getVoltage(), 0.1f, 1.f)) {
 			Controls c = readControls();
-			const HitInfo& h = engine.trigger(c, bank, args.sampleRate);
+			if (sinceTrig < 4.0 * args.sampleRate) period = sinceTrig;
+			sinceTrig = 0.0;
+			const HitInfo& h = engine.trigger(c, bank, args.sampleRate, period);
 			int n = bank ? bank->size() : 0;
 			if (h.played) {
 				hitPulse.trigger(0.005f);
@@ -224,6 +286,7 @@ struct Randrum : Module {
 
 		float l, r, m;
 		engine.process(args.sampleRate, l, r, m);
+		if (engine.ratchetFired) hitPulse.trigger(0.003f);
 		if (outputs[OUT_R_OUTPUT].isConnected()) {
 			outputs[OUT_L_OUTPUT].setVoltage(5.f * l);
 			outputs[OUT_R_OUTPUT].setVoltage(5.f * r);
@@ -385,6 +448,21 @@ struct Randrum : Module {
 		for (int i = 0; i < MAX_LOOP; i++)
 			for (int k = 0; k < NUM_DICE; k++) json_array_append_new(ring, json_real(engine.ring[i].d[k]));
 		json_object_set_new(root, "dice", ring);
+		json_t* mem = json_array();
+		for (int m = 0; m < NUM_MEMORY; m++) {
+			if (!engine.memory[m].used) {
+				json_array_append_new(mem, json_null());
+				continue;
+			}
+			json_t* a = json_array();
+			for (int i = 0; i < MAX_LOOP; i++)
+				for (int k = 0; k < NUM_DICE; k++) json_array_append_new(a, json_real(engine.memory[m].ring[i].d[k]));
+			json_array_append_new(mem, a);
+		}
+		json_object_set_new(root, "memory", mem);
+		json_object_set_new(root, "current", json_integer(engine.current));
+		json_object_set_new(root, "target", json_integer(engine.target));
+		json_object_set_new(root, "jumpNow", json_boolean(engine.jumpNow));
 		return root;
 	}
 
@@ -401,6 +479,23 @@ struct Randrum : Module {
 				for (int k = 0; k < (int) perStep; k++)
 					engine.ring[i].d[k] = clamp((float) json_number_value(json_array_get(ring, i * perStep + k)), 0.f, 0.999999f);
 		}
+		json_t* mem = json_object_get(root, "memory");
+		engine.clearMemory();
+		for (int m = 0; mem && m < NUM_MEMORY && m < (int) json_array_size(mem); m++) {
+			json_t* a = json_array_get(mem, m);
+			size_t per = json_is_array(a) ? json_array_size(a) / MAX_LOOP : 0;
+			if (per < 8 || per > (size_t) NUM_DICE) continue;
+			engine.memory[m].used = true;
+			for (int i = 0; i < MAX_LOOP; i++)
+				for (int k = 0; k < (int) per; k++)
+					engine.memory[m].ring[i].d[k] = clamp((float) json_number_value(json_array_get(a, i * per + k)), 0.f, 0.999999f);
+		}
+		auto geti = [&](const char* k) { json_t* j = json_object_get(root, k); return j ? (int) json_integer_value(j) : -1; };
+		engine.current = clamp(geti("current"), -1, NUM_MEMORY - 1);
+		engine.target = clamp(geti("target"), -1, NUM_MEMORY - 1);
+		if (engine.target >= 0 && !engine.memory[engine.target].used) engine.target = -1;
+		json_t* jn = json_object_get(root, "jumpNow");
+		engine.jumpNow = jn && json_boolean_value(jn);
 		engine.reset();
 		json_t* f = json_object_get(root, "folder");
 		if (f && json_string_value(f) && *json_string_value(f)) {
@@ -509,6 +604,7 @@ struct RandrumDisplay : Widget {
 					info += string::f("%+.0fdB", db);
 					if (std::fabs(h.pan) > 0.05f) info += string::f(" %c%.0f", h.pan < 0 ? 'L' : 'R', std::fabs(h.pan) * 100);
 					if (h.reverse) info += " REV";
+					if (h.ratchet > 1) info += string::f(" x%d", h.ratchet);
 				}
 				text(vg, ringX0 - pad, y2, info, C_SOFT, R, fss);
 			}
@@ -599,6 +695,15 @@ struct RandrumDisplay : Widget {
 				float lev = std::pow(10.f, -sl.d[D_LEVEL] * c.levelRnd * 24.f / 20.f);
 				float r = mm2px(0.55f + 0.75f * lev);
 				bool cur = i == module->engine.pos;
+				int rc = ratchetCount(sl.d[D_RATCHET], c.ratchet);
+				if (rc > 1 && plays) {
+					// a roll: small outer ring
+					nvgBeginPath(vg);
+					nvgCircle(vg, x, y, r + mm2px(0.55f));
+					nvgStrokeColor(vg, cur ? C_HOT : C_ENV);
+					nvgStrokeWidth(vg, 0.8f);
+					nvgStroke(vg);
+				}
 				if (K > 0) {
 					float lr = rr + mm2px(2.2f);
 					std::string letter(1, (char) ('A' + grp[i]));
@@ -620,7 +725,25 @@ struct RandrumDisplay : Widget {
 			text(vg, rcx, rcy + fs * 0.95f, string::f("mut %.0f%%", c.mutate * 100), C_SOFT, C, fss * 0.9f);
 			if (K > 0) text(vg, rcx, rcy + fs * 1.85f, string::f("%d sound%s", K, K == 1 ? "" : "s"), C_WIN, C, fss * 0.9f);
 		}
-		text(vg, rcx, pad + fs, "LOOP", C_SOFT, NVG_ALIGN_CENTER | NVG_ALIGN_BASELINE, fss);
+		{
+			std::string label = "LOOP";
+			NVGcolor col = C_SOFT;
+			const DrumEngine& e = module->engine;
+			int L = std::max(1, c.loop);
+			if (e.pending >= 0) {
+				label = string::f("LOOP  %c next", 'A' + e.pending);
+				col = C_HOT;
+			}
+			else if (e.target >= 0 && c.morph) {
+				label = string::f("LOOP > %c %.0f%%", 'A' + e.target, e.likeness(L) * 100.f);
+				col = C_HOT;
+			}
+			else if (e.current >= 0) {
+				label = string::f("LOOP  %c%s", 'A' + e.current, e.likeness(L, e.current) < 1.f ? "~" : "");
+				col = C_INK;
+			}
+			text(vg, rcx, pad + fs, label, col, NVG_ALIGN_CENTER | NVG_ALIGN_BASELINE, fss);
+		}
 		if (engineStuck)
 			text(vg, rcx, H - pad * 0.6f, "audio engine stopped?", C_HOT, NVG_ALIGN_CENTER | NVG_ALIGN_BASELINE, fss * 0.8f);
 		else if (bank && !msg.empty())
@@ -676,6 +799,16 @@ struct RandrumWidget : ModuleWidget {
 		addParam(createLightParamCentered<VCVLightBezel<WhiteLight>>(mm2px(Vec(63.5f, CTRL_Y)), module, Randrum::REROLL_PARAM, Randrum::REROLL_LIGHT));
 		addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(108.0f, CTRL_Y)), module, Randrum::VARIETY_PARAM));
 
+		// MEMORY / RATCHET column
+		const float memY[NUM_MEMORY] = {24.0f, 32.5f, 41.0f, 49.5f};
+		for (int k = 0; k < NUM_MEMORY; k++)
+			addParam(createLightParamCentered<VCVLightBezel<YellowLight>>(mm2px(Vec(134.6f, memY[k])), module, Randrum::MEM_PARAM + k, Randrum::MEM_LIGHT + k));
+		addParam(createLightParamCentered<VCVLightBezel<RedLight>>(mm2px(Vec(134.6f, 59.0f)), module, Randrum::SAVE_PARAM, Randrum::SAVE_LIGHT));
+		addParam(createParamCentered<CKSS>(mm2px(Vec(134.6f, 74.0f)), module, Randrum::MORPH_PARAM));
+		addInput(createInputCentered<PJ301MPort>(mm2px(Vec(134.6f, 87.0f)), module, Randrum::PATTERN_INPUT));
+		addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(126.4f, 108.0f)), module, Randrum::RATCHET_PARAM));
+		addInput(createInputCentered<PJ301MPort>(mm2px(Vec(135.8f, 108.0f)), module, Randrum::RATCHET_INPUT));
+
 		const int ins[3] = {Randrum::TRIG_INPUT, Randrum::RESET_INPUT, Randrum::REROLL_INPUT};
 		for (int i = 0; i < 3; i++)
 			addInput(createInputCentered<PJ301MPort>(mm2px(Vec(IN_X[i], JACK_Y)), module, ins[i]));
@@ -730,6 +863,8 @@ struct RandrumWidget : ModuleWidget {
 		menu->addChild(new MenuSeparator);
 		menu->addChild(createBoolPtrMenuItem("Random pitch in whole semitones", "", &m->quantise));
 		menu->addChild(createMenuItem("Re-roll the whole loop", "", [=]() { m->engine.rerollAll(); }));
+		menu->addChild(createBoolPtrMenuItem("JUMP changes pattern straight away", "", &m->engine.jumpNow));
+		menu->addChild(createMenuItem("Clear patterns A-D", "", [=]() { m->engine.clearMemory(); }));
 	}
 };
 

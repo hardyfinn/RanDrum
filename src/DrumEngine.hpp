@@ -56,7 +56,10 @@ struct Bank {
 };
 
 // D_GROUP decides which of the VARIETY sounds a step uses.
-enum Die { D_CHANCE, D_SAMPLE, D_PITCH, D_DECAY, D_START, D_LEVEL, D_PAN, D_REV, D_GROUP, NUM_DICE };
+// D_RATCHET decides whether a step rolls (and how many repeats).
+enum Die { D_CHANCE, D_SAMPLE, D_PITCH, D_DECAY, D_START, D_LEVEL, D_PAN, D_REV, D_GROUP, D_RATCHET, NUM_DICE };
+
+static const int NUM_MEMORY = 4;
 
 struct Slot {
 	float d[NUM_DICE] = {};
@@ -83,7 +86,9 @@ struct Controls {
 	float mutate = 0.f;      // 0..1
 	int loop = 0;            // 0 = free (new dice every hit), 1..16
 	PickMode mode = PICK_RANDOM;
-	int variety = MAX_LOOP;  // most different samples (RANDOM pick); >= loop length = no limit
+	int variety = MAX_LOOP;
+	float ratchet = 0.f;     // 0..1 chance a step rolls 2-4 quick repeats
+	bool morph = false;      // MUTATE moves toward the target pattern instead of random  // most different samples (RANDOM pick); >= loop length = no limit
 	bool choke = false;
 	bool quantise = false;
 };
@@ -101,8 +106,22 @@ struct HitInfo {
 	bool reverse = false;
 	int windowLo = 0, windowSize = 1;
 	int group = -1;          // which of the VARIETY sounds (-1 = not limited)
+	int ratchet = 1;         // 1 = a single hit, 2-4 = a roll
 	uint32_t count = 0;      // increments on every trigger
 };
+
+// A saved loop: the dice of every step.
+struct Pattern {
+	bool used = false;
+	Slot ring[MAX_LOOP];
+};
+
+// How many quick repeats a step plays: 1, or 2-4 when its die is under the
+// RATCHET chance (lower dice give more repeats).
+inline int ratchetCount(float die, float chance) {
+	if (chance <= 0.f || die >= chance) return 1;
+	return 4 - std::min(2, (int) (die / chance * 3.f));
+}
 
 struct Voice {
 	bool active = false;
@@ -150,7 +169,22 @@ struct DrumEngine {
 	uint32_t ageCounter = 0;
 	Rng rng;
 	HitInfo last;
-	int lastGroup = -1;     // free mode: the sound used by the last hit
+	int lastGroup = -1;
+
+	// pattern memory
+	Pattern memory[NUM_MEMORY];
+	int current = -1;       // memory slot the loop came from (or was saved to)
+	int pending = -1;       // JUMP: slot waiting for the start of the loop
+	int target = -1;        // MORPH: slot the loop is moving toward
+	bool jumpNow = false;   // JUMP straight away instead of at the loop start
+
+	// ratchets
+	Voice ratchetVoice;     // the hit being repeated
+	int ratchetLeft = 0;
+	double ratchetInterval = 0.0, ratchetTimer = 0.0;
+	float ratchetGain = 1.f;
+	bool ratchetChoke = false;
+	bool ratchetFired = false;  // set by process() when a repeat plays     // free mode: the sound used by the last hit
 	float lastEnv = 0.f;    // envelope of the newest voice, for ENV out
 
 	DrumEngine() { rerollAll(); }
@@ -158,6 +192,55 @@ struct DrumEngine {
 	void rerollAll() {
 		for (int i = 0; i < MAX_LOOP; i++)
 			for (int k = 0; k < NUM_DICE; k++) ring[i].d[k] = rng.uniform();
+		current = -1;
+	}
+
+	// ---- pattern memory ---------------------------------------------------------
+	void save(int k) {
+		memory[k].used = true;
+		for (int i = 0; i < MAX_LOOP; i++) memory[k].ring[i] = ring[i];
+		current = k;
+		if (pending == k) pending = -1;
+	}
+
+	void load(int k) {
+		for (int i = 0; i < MAX_LOOP; i++) ring[i] = memory[k].ring[i];
+		current = k;
+	}
+
+	// A slot button (or the PAT CV) was used. JUMP: load it at the start of the
+	// loop (or now). MORPH: make it the target.
+	void select(int k, bool morph, bool loopOn) {
+		if (k < 0 || k >= NUM_MEMORY || !memory[k].used) return;
+		if (morph) {
+			target = (target == k) ? -1 : k;   // pressing the target again stops the morph
+			pending = -1;
+			return;
+		}
+		target = -1;
+		if (jumpNow || !loopOn) {
+			load(k);
+			pending = -1;
+		}
+		else pending = k;
+	}
+
+	void clearMemory() {
+		for (Pattern& p : memory) p.used = false;
+		current = pending = target = -1;
+	}
+
+	// How much of the loop already matches the target (or slot k), 0..1.
+	float likeness(int L, int slot = -2) const {
+		int t = slot == -2 ? target : slot;
+		if (t < 0 || L <= 0) return 0.f;
+		int same = 0, total = 0;
+		for (int i = 0; i < L; i++)
+			for (int k = 0; k < NUM_DICE; k++) {
+				same += ring[i].d[k] == memory[t].ring[i].d[k];
+				total++;
+			}
+		return total ? (float) same / total : 0.f;
 	}
 
 	void reset() {
@@ -168,6 +251,7 @@ struct DrumEngine {
 
 	void stopAll() {
 		for (Voice& v : voices) v.active = false;
+		ratchetLeft = 0;
 	}
 
 	// The slot for the next hit: a fresh roll, or the next one in the ring.
@@ -181,8 +265,15 @@ struct DrumEngine {
 		int L = std::min(c.loop, MAX_LOOP);
 		pos = (pos + 1) % L;
 		if (pos < 0) pos = 0;
+		if (pos == 0 && pending >= 0) {
+			load(pending);
+			pending = -1;
+		}
+		bool toward = c.morph && target >= 0 && memory[target].used;
 		for (int k = 0; k < NUM_DICE; k++)
-			if (c.mutate > 0.f && rng.uniform() < c.mutate) ring[pos].d[k] = rng.uniform();
+			if (c.mutate > 0.f && rng.uniform() < c.mutate)
+				ring[pos].d[k] = toward ? memory[target].ring[pos].d[k] : rng.uniform();
+		if (toward && current != target && likeness(L) >= 1.f) current = target;
 		slotIndex = pos;
 		return ring[pos];
 	}
@@ -288,7 +379,10 @@ struct DrumEngine {
 	}
 
 	// Called on each trigger. Returns what happened.
-	const HitInfo& trigger(const Controls& c, const Bank* bank, float engineRate) {
+	// period: samples since the previous trigger (0 if unknown); ratchets
+	// split it into equal parts.
+	const HitInfo& trigger(const Controls& c, const Bank* bank, float engineRate, double period = 0.0) {
+		ratchetLeft = 0;
 		HitInfo h;
 		h.count = last.count + 1;
 		int slotIndex;
@@ -382,12 +476,57 @@ struct DrumEngine {
 		nv.fadeInStep = 1.f / (0.001f * engineRate);
 		nv.age = ++ageCounter;
 		*v = nv;
+
+		// a roll: repeat the same hit, each a little quieter
+		h.ratchet = ratchetCount(s.d[D_RATCHET], c.ratchet);
+		last.ratchet = h.ratchet;
+		if (h.ratchet > 1) {
+			if (period <= 0.0) period = 0.125 * engineRate;
+			period = std::min(std::max(period, 0.02 * engineRate), 2.0 * engineRate);
+			ratchetVoice = nv;
+			ratchetLeft = h.ratchet - 1;
+			ratchetInterval = period / h.ratchet;
+			ratchetTimer = ratchetInterval;
+			ratchetGain = 1.f;
+			ratchetChoke = c.choke;
+		}
 		return last;
+	}
+
+	void startRatchet(float engineRate) {
+		ratchetGain *= 0.8f;  // about -2 dB per repeat
+		if (ratchetChoke) {
+			for (Voice& v : voices)
+				if (v.active && v.fadeOutStep == 0.f) v.fadeOutStep = 1.f / (0.003f * engineRate);
+		}
+		Voice* v = nullptr;
+		for (Voice& x : voices) if (!x.active) { v = &x; break; }
+		if (!v) {
+			v = &voices[0];
+			for (Voice& x : voices) if (x.age < v->age) v = &x;
+		}
+		Voice nv = ratchetVoice;
+		nv.gL *= ratchetGain;
+		nv.gR *= ratchetGain;
+		nv.gMono *= ratchetGain;
+		nv.fadeIn = 0.f;  // short fade so a repeat on a ringing sound doesn't click
+		nv.age = ++ageCounter;
+		*v = nv;
 	}
 
 	// One sample of output. mono is the sum without panning.
 	void process(float engineRate, float& outL, float& outR, float& outMono) {
 		outL = outR = outMono = 0.f;
+		ratchetFired = false;
+		if (ratchetLeft > 0) {
+			ratchetTimer -= 1.0;
+			if (ratchetTimer <= 0.0) {
+				startRatchet(engineRate);
+				ratchetLeft--;
+				ratchetTimer += ratchetInterval;
+				ratchetFired = true;
+			}
+		}
 		uint32_t newest = 0;
 		float newestEnv = 0.f;
 		for (Voice& v : voices) {

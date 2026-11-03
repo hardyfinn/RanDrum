@@ -274,6 +274,69 @@ int main() {
 		c.mode = PICK_WALK; c.loop = 8; c.variety = 2;
 		CHECK(DrumEngine::varietyCount(c) == 0);
 	}
+	// 17. memory: save, change, jump back at the loop start
+	{
+		Bank b = makeBank(32);
+		DrumEngine e;
+		Controls c; c.loop = 4; c.mutate = 0.f; c.pitchRnd = 1.f;
+		std::vector<int> a;
+		for (int i = 0; i < 4; i++) a.push_back(e.trigger(c, &b, SR).index);
+		e.save(0);
+		e.rerollAll();
+		std::vector<int> bb;
+		for (int i = 0; i < 4; i++) bb.push_back(e.trigger(c, &b, SR).index);
+		CHECK(a != bb);
+		e.trigger(c, &b, SR);              // step 1 of the new pattern
+		e.select(0, false, true);          // JUMP: waits for the loop start
+		CHECK(e.pending == 0);
+		for (int i = 0; i < 3; i++) e.trigger(c, &b, SR);
+		std::vector<int> back;
+		for (int i = 0; i < 4; i++) back.push_back(e.trigger(c, &b, SR).index);
+		CHECK(back == a && e.current == 0 && e.pending == -1);
+		e.select(3, false, true);          // empty slot: nothing happens
+		CHECK(e.pending == -1);
+	}
+	// 18. morph: the loop becomes the target, step by step
+	{
+		Bank b = makeBank(32);
+		DrumEngine e;
+		Controls c; c.loop = 8; c.mutate = 0.3f; c.morph = true;
+		e.save(1);
+		e.rerollAll();
+		e.select(1, true, true);
+		CHECK(e.target == 1);
+		float l0 = e.likeness(8);
+		CHECK(l0 < 0.2f);
+		for (int i = 0; i < 400; i++) e.trigger(c, &b, SR);
+		CHECK(e.likeness(8) == 1.f && e.current == 1);
+		e.select(1, true, true);           // press again: stop morphing
+		CHECK(e.target == -1);
+	}
+	// 19. ratchets: counts, timing and the HIT flag
+	{
+		CHECK(ratchetCount(0.5f, 0.f) == 1 && ratchetCount(0.9f, 0.5f) == 1);
+		CHECK(ratchetCount(0.0f, 0.6f) == 4 && ratchetCount(0.3f, 0.6f) == 3 && ratchetCount(0.5f, 0.6f) == 2);
+		Bank b = makeBank(1, 48000);
+		DrumEngine e;
+		Controls c; c.ratchet = 1.f; c.loop = 1; c.mutate = 0.f;
+		e.ring[0].d[D_RATCHET] = 0.1f;     // -> 4 repeats
+		e.ring[0].d[D_CHANCE] = 0.f;
+		const HitInfo& h = e.trigger(c, &b, SR, 4800.0);
+		CHECK(h.ratchet == 4);
+		float L, R, M;
+		std::vector<int> at;
+		for (int i = 0; i < 6000; i++) { e.process(SR, L, R, M); if (e.ratchetFired) at.push_back(i); }
+		CHECK(at.size() == 3);
+		if (at.size() == 3) CHECK(std::abs(at[0] - 1199) <= 1 && std::abs(at[1] - 2399) <= 1 && std::abs(at[2] - 3599) <= 1);
+		// a new trigger cancels the rest of a roll
+		e.trigger(c, &b, SR, 4800.0);
+		e.ring[0].d[D_RATCHET] = 0.99f;
+		c.ratchet = 0.5f;
+		CHECK(e.trigger(c, &b, SR, 4800.0).ratchet == 1);
+		int fired = 0;
+		for (int i = 0; i < 6000; i++) { e.process(SR, L, R, M); fired += e.ratchetFired; }
+		CHECK(fired == 0);
+	}
 	std::printf(fails ? "%d FAILED\n" : "all tests passed\n", fails);
 	return fails ? 1 : 0;
 }

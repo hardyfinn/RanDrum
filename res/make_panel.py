@@ -13,7 +13,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 FONT_BOLD = os.environ.get("PANEL_FONT_BOLD", "/usr/share/fonts/opentype/inter/Inter-Bold.otf")
 FONT_MED = os.environ.get("PANEL_FONT_MED", "/usr/share/fonts/opentype/inter/Inter-Medium.otf")
 
-W, H = 121.92, 128.5  # 24 HP
+W, H = 142.24, 128.5  # 28 HP
+MAIN_W = 121.92       # the original 24 HP; the MEMORY column sits to the right
 
 BG = "#27232C"
 BG_DARK = "#1E1B22"
@@ -73,14 +74,14 @@ add(f'<rect width="{W}" height="{H}" fill="{BG}"/>')
 import random
 rnd = random.Random(7)
 for _ in range(70):
-    x, y = rnd.uniform(2, W - 2), rnd.uniform(48, H - 30)
+    x, y = rnd.uniform(2, MAIN_W - 2), rnd.uniform(48, H - 30)
     add(f'<circle cx="{x:.2f}" cy="{y:.2f}" r="{rnd.uniform(0.25, 0.55):.2f}" fill="{BG_DARK}"/>')
 
 # title
 add(text("RANDRUM", 6.0, 10.4, 4.6, FONT_BOLD, INK, anchor="start", spacing=0.12))
 die(36.0, 6.5, 4.0, 5, HOT, BG)
 die(41.0, 6.5, 4.0, 2, INK, BG)
-add(text("a bag of drums, a handful of dice", W - 6.0, 10.0, 2.1, FONT_MED, SOFT, anchor="end"))
+add(text("a bag of drums, a handful of dice", MAIN_W - 6.0, 10.0, 2.1, FONT_MED, SOFT, anchor="end"))
 
 # display window
 add(f'<rect x="4.0" y="12.4" width="113.9" height="33.8" rx="1.6" fill="#0C0B0E"/>')
@@ -115,7 +116,24 @@ for i, (big, small, cv, lo, hi) in enumerate(blocks):
 
 # separators
 for y in (47.6, 101.2):
-    add(f'<line x1="4" y1="{y}" x2="{W - 4}" y2="{y}" stroke="{BG_DARK}" stroke-width="0.5"/>')
+    add(f'<line x1="4" y1="{y}" x2="{MAIN_W - 3}" y2="{y}" stroke="{BG_DARK}" stroke-width="0.5"/>')
+
+# ---- MEMORY / RATCHET column (positions match src/Randrum.cpp) ----
+CX = 131.3
+add(f'<rect x="{MAIN_W + 0.2}" y="12.4" width="{W - MAIN_W - 1.8}" height="108.4" rx="1.4" fill="{BG_DARK}"/>')
+add(text("MEMORY", CX, 17.6, 2.3, FONT_BOLD, HOT, spacing=0.08))
+for i, y in enumerate([24.0, 32.5, 41.0, 49.5]):
+    add(text("ABCD"[i], 125.8, y + 1.2, 3.0, FONT_BOLD, INK))
+add(text("SAVE", 126.2, 59.8, 1.9, FONT_BOLD, INK))
+add(text("then A-D", CX, 64.9, 1.4, FONT_MED, SOFT))
+add(text("morph", 126.8, 71.4, 1.6, FONT_MED, SOFT))
+add(text("jump", 126.8, 77.0, 1.6, FONT_MED, SOFT))
+add(text("PAT", 126.2, 86.3, 1.9, FONT_BOLD, INK))
+add(text("CV A-D", 126.2, 89.0, 1.35, FONT_MED, SOFT))
+add(f'<line x1="{MAIN_W + 2}" y1="94.6" x2="{W - 3.5}" y2="94.6" stroke="{BG}" stroke-width="0.5"/>')
+add(text("RATCHET", CX, 100.0, 2.1, FONT_BOLD, HOT, spacing=0.06))
+add(text("chance", 126.4, 116.2, 1.45, FONT_MED, SOFT))
+add(text("CV", 135.8, 116.2, 1.6, FONT_BOLD, SOFT))
 
 # controls row
 CTRL_Y = 106.5

@@ -63,9 +63,15 @@ place("CKSSThreeHorizontal_0", 18.0, 106.5)
 place("CKSS_0", 45.7, 106.5)
 place("VCVBezel", 63.5, 106.5)
 knob("RoundSmallBlackKnob", 108.0, 106.5, 0.2, -R, R)
+for y in [24.0, 32.5, 41.0, 49.5, 59.0]:
+    place("VCVBezel", 134.6, y)
+place("CKSS_0", 134.6, 74.0)
+place("PJ301M", 134.6, 87.0)
+knob("RoundSmallBlackKnob", 126.4, 108.0, 0.3, -R, R)
+place("PJ301M", 135.8, 108.0)
 for x in [14.5, 25.0, 35.5, 51.0, 61.5, 72.0, 82.5, 93.0, 103.5]:
     place("PJ301M", x, 120.5)
-W_MM = 121.92
+W_MM = 142.24
 for (x, y) in [(15 / PX, 0), (W_MM - 30 / PX, 0), (15 / PX, 128.5 - 15 / PX), (W_MM - 30 / PX, 128.5 - 15 / PX)]:
     place("ScrewSilver", x, y, centered=False)
 
@@ -82,6 +88,8 @@ canvas {{ position:absolute; }}
 </style></head><body><div id="p">
 <canvas id="d" width="{disp['w']}" height="{disp['h']}" style="left:{disp['x']}px;top:{disp['y']}px"></canvas>
 {''.join(items)}
+<div style="position:absolute;left:{134.6 * PX * SCALE - 11}px;top:{24.0 * PX * SCALE - 11}px;width:22px;height:22px;border-radius:11px;background:#f5d040;opacity:0.9;box-shadow:0 0 12px #f5d040"></div>
+<div style="position:absolute;left:{132.5 * PX * SCALE - 11}px;top:{0}px;display:none"></div>
 <div style="position:absolute;left:{(82.5 + 4.4) * PX * SCALE - 6}px;top:{(120.5 - 5.4) * PX * SCALE - 6}px;width:12px;height:12px;border-radius:6px;background:#f5d040;box-shadow:0 0 10px #f5d040"></div>
 </div>
 <script>
@@ -99,7 +107,7 @@ function draw() {{
   t(ringX0-pad, pad+fs, 'RANDOM', C.soft, 'right', fss);
   const y2 = pad + fs*2.25;
   t(pad, y2, '09 rim_tight_02', C.hot, 'left', fss);
-  t(ringX0-pad, y2, '+2.4st 180ms -3dB L35', C.soft, 'right', fss);
+  t(ringX0-pad, y2, '+2.4st 180ms -3dB L35 x3', C.soft, 'right', fss);
   const wy = y2 + 1.4*mm, wh = H - wy - 6.2*mm, wx = pad, ww = leftW;
   c.fillStyle = '#1A1A20'; c.fillRect(wx, wy, ww, wh);
   c.fillStyle = C.wave;
@@ -123,14 +131,15 @@ function draw() {{
     const r = mm*(0.55+0.75*lev[i]), cur = i==2+1;
     const lr = rr + 2.2*mm; c.textBaseline='middle'; t(rcx+lr*Math.cos(a), rcy+lr*Math.sin(a), 'ABACBCAB'[i], cur ? C.hot : C.win, 'center', fss*0.8); c.textBaseline='alphabetic';
     c.beginPath(); c.arc(x,y,r,0,2*Math.PI);
-    if (plays[i]) {{ c.fillStyle = cur ? C.hot : C.ink; c.fill(); }} else {{ c.strokeStyle = cur ? C.hot : C.soft; c.lineWidth = 3; c.stroke(); }}
+    if (plays[i]) {{ c.fillStyle = cur ? C.hot : C.ink; c.fill(); }}
+    if (i==4) {{ c.beginPath(); c.arc(x,y,r+0.55*mm,0,2*Math.PI); c.strokeStyle=C.env; c.lineWidth=2.4; c.stroke(); }} else {{ c.strokeStyle = cur ? C.hot : C.soft; c.lineWidth = 3; c.stroke(); }}
   }}
   c.textBaseline = 'middle';
   t(rcx, rcy-fs*0.15, '8', C.ink, 'center', fs*1.3);
   t(rcx, rcy+fs*0.95, 'mut 15%', C.soft, 'center', fss*0.9);
   t(rcx, rcy+fs*1.85, '3 sounds', C.win, 'center', fss*0.9);
   c.textBaseline = 'alphabetic';
-  t(rcx, pad+fs, 'LOOP', C.soft, 'center', fss);
+  t(rcx, pad+fs, 'LOOP  A~', C.ink, 'center', fss);
   document.title = 'done';
 }}
 </script></body></html>"""

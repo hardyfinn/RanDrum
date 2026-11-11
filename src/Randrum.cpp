@@ -754,13 +754,13 @@ struct RandrumDisplay : Widget {
 // ---- panel -----------------------------------------------------------------
 // Positions in mm; res/make_panel.py uses the same numbers.
 static const float COL_X[4] = {15.2f, 45.7f, 76.2f, 106.7f};
-static const float ROW_KNOB_Y[2] = {57.5f, 84.5f};
-static const float ROW_SMALL_Y[2] = {67.0f, 94.0f};
+static const float ROW_KNOB_Y[2] = {54.5f, 82.7f};
+static const float ROW_SMALL_Y[2] = {64.0f, 92.2f};
 static const float SMALL_DX = 6.0f;
-static const float CTRL_Y = 106.5f;
-static const float JACK_Y = 120.5f;
-static const float IN_X[3] = {14.5f, 25.0f, 35.5f};
-static const float OUT_X[6] = {51.0f, 61.5f, 72.0f, 82.5f, 93.0f, 103.5f};
+static const float CTRL_Y = 107.0f;
+static const float JACK_Y = 121.0f;
+static const float IN_X[3] = {13.5f, 25.5f, 38.5f};
+static const float OUT_X[6] = {51.0f, 62.5f, 73.5f, 84.5f, 95.5f, 106.0f};
 
 struct RandrumWidget : ModuleWidget {
 	RandrumWidget(Randrum* module) {
@@ -772,7 +772,7 @@ struct RandrumWidget : ModuleWidget {
 		addChild(createWidget<ScrewSilver>(Vec(box.size.x - 2 * RACK_GRID_WIDTH, RACK_GRID_HEIGHT - RACK_GRID_WIDTH)));
 
 		RandrumDisplay* d = createWidget<RandrumDisplay>(mm2px(Vec(4.6f, 13.0f)));
-		d->box.size = mm2px(Vec(112.7f, 32.6f));
+		d->box.size = mm2px(Vec(112.7f, 28.6f));
 		d->module = module;
 		addChild(d);
 
@@ -814,8 +814,8 @@ struct RandrumWidget : ModuleWidget {
 			addInput(createInputCentered<PJ301MPort>(mm2px(Vec(IN_X[i], JACK_Y)), module, ins[i]));
 		for (int i = 0; i < 6; i++)
 			addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(OUT_X[i], JACK_Y)), module, Randrum::OUT_L_OUTPUT + i));
-		addChild(createLightCentered<SmallLight<YellowLight>>(mm2px(Vec(OUT_X[3] + 4.4f, JACK_Y - 5.4f)), module, Randrum::HIT_LIGHT));
-		addChild(createLightCentered<SmallLight<BlueLight>>(mm2px(Vec(OUT_X[4] + 4.4f, JACK_Y - 5.4f)), module, Randrum::SKIP_LIGHT));
+		addChild(createLightCentered<SmallLight<YellowLight>>(mm2px(Vec(OUT_X[3] + 5.2f, JACK_Y - 3.6f)), module, Randrum::HIT_LIGHT));
+		addChild(createLightCentered<SmallLight<BlueLight>>(mm2px(Vec(OUT_X[4] + 5.2f, JACK_Y - 3.6f)), module, Randrum::SKIP_LIGHT));
 	}
 
 	void onPathDrop(const PathDropEvent& e) override {

@@ -125,7 +125,7 @@ struct Randrum : Module {
 		configParam(START_RND_PARAM, 0.f, 1.f, 0.f, "Random start (up to half the sample later)", "%", 0.f, 100.f);
 		configParam(CHANCE_PARAM, 0.f, 1.f, 1.f, "Chance that a trigger plays", "%", 0.f, 100.f);
 		configParam(REV_PARAM, 0.f, 1.f, 0.f, "Chance of playing backwards", "%", 0.f, 100.f);
-		configParam<LevelQuantity>(LEVEL_PARAM, 0.f, 1.f, 0.7071f, "Level");
+		configParam<LevelQuantity>(LEVEL_PARAM, 0.f, 1.f, 0.7071f, "Level")->randomizeEnabled = false;
 		configParam(LEVEL_RND_PARAM, 0.f, 1.f, 0.f, "Random level (up to 24 dB quieter)", "%", 0.f, 100.f);
 		configParam<PanQuantity>(PAN_PARAM, -1.f, 1.f, 0.f, "Pan");
 		configParam(PAN_RND_PARAM, 0.f, 1.f, 0.f, "Random pan", "%", 0.f, 100.f);
